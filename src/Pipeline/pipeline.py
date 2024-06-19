@@ -65,7 +65,12 @@ class Pipeline:
                 else:
                     name = cls.__name__
             if depends_on is None:
-                depends_on = list(inspect.signature(cls.location).parameters.keys())[1:]
+                depends_on = list(inspect.signature(cls.location).parameters.keys())
+                for n in depends_on:
+                    if n in self.coords:
+                        for d in  self.coords[n].dependencies:
+                            if d in self.coords and not d in depends_on:
+                                raise Exception(f"Problem {[d for d in self.coords[n].dependencies if d in self.coords]} {depends_on}")
                 loc_func = lambda coords: cls.location(**{k: v for k,v in coords.items() if k in depends_on})
                 compute_func =  lambda out_location, coords: cls.compute(out_location, **{k: v for k,v in coords.items() if k in depends_on}) if hasattr(cls, "compute") else None
             else:
@@ -100,7 +105,6 @@ class Pipeline:
                     raise Exception(f'{name} should appear in columns...')
                 r.append(tmp)
             ddf= pd.concat(r)
-            print(ddf)
             for s, v in selection_dict.items():
                 if s in ddf.columns:
                     if isinstance(v, tuple):
@@ -119,9 +123,9 @@ class Pipeline:
     
     def get_locations(self, name, selection_dict={}, **selection_kwargs) -> pd.Series:
         coords = self.get_coords(self.data[name].dependencies, selection_dict, **selection_kwargs)
-        cols = coords.columns
+        cols = [str(c) for c in coords.columns]
         coords["location"] = coords.apply(lambda row: self.data[name].location(row.to_dict()), axis=1)
-        return coords.set_index(cols)
+        return coords.set_index(cols)["location"]
             
 
     def get_single_location(self, name, selection_dict={}, **selection_kwargs) -> Path:
@@ -133,5 +137,5 @@ class Pipeline:
     
     def compute(self, name,  selection_dict={}, **selection_kwargs) -> None:
         locs = self.get_locations(name, selection_dict, **selection_kwargs).reset_index()
-        for _, row in locs.items():
+        for _, row in locs.iterrows():
             self.data[name].computation(row.iat[-1], row.iloc[:-1].to_dict())

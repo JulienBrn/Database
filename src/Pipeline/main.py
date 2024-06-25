@@ -26,16 +26,24 @@ sys.excepthook = handle_exception
 p = Pipeline()
 base_folder= Path(".")/"test"
 
-@p.register_coord()
+@p.register_coord(["subject", "stupid"])
 def subject():
-    return pd.DataFrame([["s1", "toto"], ["s2", "titi"]], columns=["subject", "stupid"])
+    return pd.DataFrame([["s1", "toto"], ["s2", "tata"], ["s1", "titi"]], columns=["subject", "stupid"])
 
-@p.register_coord()
-def session(subject, stupid):
+@p.register_coord(["session"])
+def session(subject):
     if subject == "s1":
-        return pd.DataFrame([["se1" + stupid], ["se2"]], columns=["session"])
-    elif subject == "s2":
+        return pd.DataFrame([["se1" + subject], ["se2"]], columns=["session"])
+    else:
         return pd.DataFrame([["se3"]], columns=["session"])
+
+@p.register_coord(["fs"])
+def fs():
+    return [10, 20]
+
+@p.register_coord(["test"])
+def test(subject):
+    return pd.DataFrame([[5+int(subject[1])], [10]], columns=["test"])
 
 @p.register_data()
 class Song:
@@ -47,10 +55,10 @@ class Song:
         return base_folder / subject / session / "song.npy"
     
     @staticmethod
-    def compute(out_location: Path, session, subject):
+    def compute(out_location: Path, selection):
         if out_location.exists():
             return
-        res= np.arange(len(session)*len(subject))
+        res= np.arange(len(selection["session"])*len(selection["subject"]))
         out_location.parent.mkdir(exist_ok=True, parents=True)
         np.save(out_location, res)
 
@@ -63,20 +71,25 @@ class SongFilt:
         return base_folder / subject / session / "songfilt.npy"
     
     @staticmethod
-    def compute(out_location: Path, session, subject):
+    def compute(out_location: Path, selection):
         if out_location.exists():
             return
-        songloc = p.get_single_location("song", session=session, subject=subject)
+        songloc = p.get_single_location("song", selection)
         if not songloc.exists():
-            p.compute("song", session=session, subject=subject)
+            p.compute("song", selection)
         s = np.load(songloc)
         res = np.cumsum(s)
         out_location.parent.mkdir(exist_ok=True, parents=True)
         np.save(out_location, res)
 
 def run():
+    global p
     setup_nice_logging()
     logger.info("Running start")
-    print(p.get_coords("session", subject=slice("s1", "s3")))
-    p.compute("songfilt")
+    p = p.initialize()
+    print(p.get_coords(["subject"]
+                    #    , subject=slice("s1", "s3")
+                    #    , session="se2"
+                    ))
+    print(p.compute("songfilt"))
     logger.info("Running end")

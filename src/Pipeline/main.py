@@ -1,6 +1,6 @@
 import logging, beautifullogger
 import sys
-from Pipeline.pipeline import Pipeline
+from Pipeline.pipeline import Pipeline, cache
 import pandas as pd, numpy as np
 from pathlib import Path
 logger = logging.getLogger(__name__)
@@ -55,12 +55,10 @@ class Song:
         return base_folder / subject / session / "song.npy"
     
     @staticmethod
+    @cache(saver=np.save, open="wb")
     def compute(out_location: Path, selection):
-        if out_location.exists():
-            return
         res= np.arange(len(selection["session"])*len(selection["subject"]))
-        out_location.parent.mkdir(exist_ok=True, parents=True)
-        np.save(out_location, res)
+        return res
 
 @p.register_data()
 class SongFilt:
@@ -71,16 +69,14 @@ class SongFilt:
         return base_folder / subject / session / "songfilt.npy"
     
     @staticmethod
+    @cache(saver=np.save, open="wb")
     def compute(out_location: Path, selection):
-        if out_location.exists():
-            return
         songloc = p.get_single_location("song", selection)
         if not songloc.exists():
             p.compute("song", selection)
         s = np.load(songloc)
         res = np.cumsum(s)
-        out_location.parent.mkdir(exist_ok=True, parents=True)
-        np.save(out_location, res)
+        return res
 
 def run():
     global p

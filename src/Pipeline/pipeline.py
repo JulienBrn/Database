@@ -188,6 +188,41 @@ class PipelineInstance:
                 e.add_note(f'During computation of {name}({row["location"]}, {row.drop("location").to_dict()})')
                 raise 
 
+def default_saver(path: Path, o):
+    import pickle
+    with path.open("wb") as f:
+        pickle.dump(o, f)
+
+def safe_save(saver):
+    import shutil
+    def new_saver(path, o):
+        tmp_path = Path(str(path) + ".tmp")
+        tmp_path.parent.mkdir(exist_ok=True, parents=True)
+        saver(tmp_path, o)
+        shutil.move(tmp_path, path)
+    return new_saver
+
+def open_and_save(saver, mode):
+    def new_saver(path, o):
+        with path.open(mode) as f:
+            saver(f, o)
+    return new_saver
+
+def cache(saver=default_saver, open=None):
+    def decorator(f):
+        @functools.wraps(f)
+        def new_f(out_location, *args, **kwargs):
+            if out_location.exists():
+                return
+            res = f(out_location, *args, **kwargs)
+            if open is None:
+                msaver= saver
+            else:
+                msaver = open_and_save(saver, open)
+            safe_save(msaver)(out_location, res)
+                
+        return new_f
+    return decorator
 
 # class CoordsProtocol(Protocol):
 #     def meth(self, coords: Dict[str, Any]) -> pd.DataFrame: ...

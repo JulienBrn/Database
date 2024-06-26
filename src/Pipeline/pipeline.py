@@ -9,6 +9,9 @@ class ComputeProtocol(Protocol):
     def meth(self, out_location, coords: Dict[str, Any]) -> None: ...
 
 
+
+
+
 @dataclass
 class CoordComputer:
     coords: set[str]
@@ -16,20 +19,42 @@ class CoordComputer:
     compute: Callable[[Mapping[str, Any]], pd.DataFrame]
 
     @staticmethod
-    def decl_decorator(func: Callable, coords: set[str] = None):
-        if coords is None:
-            coords = set([func.__name__])
-        func_args = set(inspect.signature(func).parameters.keys())
-        def new_func(*args, **kwargs):
-            res = func(*args, **kwargs)
-            if not isinstance(res, pd.DataFrame):
-                res = pd.DataFrame(res, columns=list(coords))
-            if set(res.columns) != set(coords):
-                raise Exception("Problem in coord definition")
-            return res
-        return CoordComputer(coords=set(coords), dependencies=func_args, compute=lambda d: new_func(**{k: v for k,v in d.items() if k in func_args}))
-
-
+    def from_function(coords=None, dependencies=None, vectorized=False, adapt_return=True):
+        def decorate(f):
+            nonlocal coords, dependencies, vectorized, adapt_return
+            if coords is None:
+                coords=set([f.__name__])
+            if dependencies is None:
+                if vectorized:
+                    raise Exception("Unable to determine dependencies")
+                else:
+                    dependencies = set(inspect.signature(f).parameters.keys())
+            if adapt_return:
+                @functools.wraps(f)
+                def new_f(*args, **kwargs):
+                    res = f(*args, **kwargs)
+                    if not isinstance(res, pd.DataFrame):
+                        res = pd.DataFrame(res, columns=list(coords))
+                    if not set(coords).issubset(set(res.columns)):
+                        raise Exception(f"Problem in coord definition")
+                    return res
+            else:
+                new_f = f
+            if not vectorized:
+                def compute(df: pd.DataFrame):
+                    tmp_dfs = []
+                    for _, row in df.iterrows():
+                        d = row.to_dict()
+                        tmp = new_f(**d)
+                        for k,v in d.items():
+                            tmp[k] = v
+                        tmp_dfs.append(tmp)
+                    return pd.concat(tmp_dfs)
+            else:
+                compute= new_f
+            f._pipelineobject = CoordComputer(coords=set(coords), dependencies=set(dependencies), compute=compute)
+            return f
+        return decorate
             
 @dataclass
 class Data:
@@ -39,14 +64,15 @@ class Data:
     compute: ComputeProtocol | None
 
     @staticmethod
-    def decl_decorator(cls):
+    def from_class(cls):
         if not hasattr(cls, "location"):
             raise Exception("No location function")
         loc_func = getattr(cls, "location")
         loc_func_args = set(inspect.signature(loc_func).parameters.keys())
         compute_func = None if not hasattr(cls, "compute") else getattr(cls, "compute")
         name = getattr(cls, "name") if hasattr(cls, "name") else cls.__name__ 
-        return Data(name=name,coords=loc_func_args, get_location=lambda d: loc_func(**{k: v for k,v in d.items() if k in loc_func_args}), compute=compute_func)
+        cls._pipelineobject = Data(name=name,coords=loc_func_args, get_location=lambda d: loc_func(**{k: v for k,v in d.items() if k in loc_func_args}), compute=compute_func)
+        return cls
 
 class Pipeline:
     coord_computers = List[CoordComputer]
@@ -56,32 +82,45 @@ class Pipeline:
         self.coord_computers = []
         self.data = {}
 
+    def declare(self, o):
+        print(f"declaring {o}")
+        if isinstance(o, CoordComputer):
+            self.coord_computers.append(o)
+        elif isinstance(o, Data):
+            if o.name in self.data:
+                raise Exception(f"Data {o.name} already exists")
+            self.data[o.name] = o
+        else:
+            raise Exception(f'Cannot declare object of type {type(o)}')
 
+    def register(self, f):
+        self.declare(f._pipelineobject)
+        return f
 
-    def declare_coord(self, o: CoordComputer):
-        self.coord_computers.append(o)
+    # def declare_coord(self, o: CoordComputer):
+    #     self.coord_computers.append(o)
             
+    # def declare_data(self, d: Data):
+    #     if d.name in self.data:
+    #         raise Exception(f"Data {d.name} already exists")
+    #     self.data[d.name] = d
 
-    def declare_data(self, d: Data):
-        if d.name in self.data:
-            raise Exception(f"Data {d.name} already exists")
-        self.data[d.name] = d
 
-
-    def register_coord(self, coords=None):
-        def decorator(f):
-            self.declare_coord(CoordComputer.decl_decorator(f, coords))
-            return f
-        return decorator
+    # def register_coord(self, coords=None):
+    #     def decorator(f):
+    #         self.declare_coord(CoordComputer.decl_decorator(f, coords))
+    #         return f
+    #     return decorator
     
     
-    def register_data(self):
-        def decorator(f):
-            self.declare_data(Data.decl_decorator(f))
-            return f
-        return decorator
+    # def register_data(self):
+    #     def decorator(f):
+    #         self.declare_data(Data.decl_decorator(f))
+    #         return f
+    #     return decorator
     
     def initialize(self):
+        print(list(self.data.keys()))
         if hasattr(self, "instance"):
             raise Exception("Cannot be initialized twice")
         inst = PipelineInstance(self)
@@ -144,25 +183,44 @@ class PipelineInstance:
         while not all_names.issubset(set(df.columns)):
             for cc in self.p.coord_computers:
                 if cc.coords.intersection(all_names) != set() and cc.dependencies.issubset(set(df.columns)) and not cc.coords.issubset(set(df.columns)):
-                    tmp_dfs = []
+                    # tmp_dfs = []
                     dep_list = list(cc.dependencies)
-                    if len(cc.dependencies) > 0:
-                        for ind, _ in df.groupby(dep_list if len(dep_list) > 1 else dep_list[0]):
-                            if not isinstance(ind, tuple):
-                                ind = (ind, )
-                            dep_dict = {k:v for k, v in zip(dep_list, ind)}
-                            ret_df = cc.compute(dep_dict)
-                            ret_df = self._filter(ret_df, selection_dict)
-                            for k, v in dep_dict.items():
-                                ret_df[k] = v
-                            tmp_dfs.append(ret_df)
-                        tmp_df = pd.concat(tmp_dfs)
-                        df = pd.merge(df, tmp_df, on=list(cc.dependencies), how="inner") 
-                    else:
-                        ndf = cc.compute({})
-                        ndf = self._filter(ndf, selection_dict)
-                        df = pd.merge(df, ndf, how="cross") 
-        res = df.groupby(list(all_names), group_keys=False).apply(lambda g: g.drop_duplicates(subset=list(all_names), inplace=False))
+                    param_df = df[dep_list].drop_duplicates()
+                    try:
+                        tmp_df = self._filter(cc.compute(param_df), selection_dict)
+                    except Exception as e:
+                        e.add_note(f'While computing {cc.coords}')
+                        raise e
+                    df = pd.merge(df, tmp_df, on=list(cc.dependencies), how="inner") if len(dep_list) > 0 else pd.merge(df, tmp_df, how="cross") 
+                    
+                    # if len(cc.dependencies) > 0:
+                    #     for ind, _ in df.groupby(dep_list if len(dep_list) > 1 else dep_list[0]):
+                    #         if not isinstance(ind, tuple):
+                    #             ind = (ind, )
+                    #         dep_dict = {k:v for k, v in zip(dep_list, ind)}
+                    #         ret_df = cc.compute(dep_dict)
+                    #         ret_df = self._filter(ret_df, selection_dict)
+                    #         for k, v in dep_dict.items():
+                    #             ret_df[k] = v
+                    #         tmp_dfs.append(ret_df)
+                    #     tmp_df = pd.concat(tmp_dfs)
+                    #     df = pd.merge(df, tmp_df, on=list(cc.dependencies), how="inner") 
+                    # else:
+                    #     ndf = cc.compute({})
+                    #     ndf = self._filter(ndf, selection_dict)
+                    #     df = pd.merge(df, ndf, how="cross") 
+        def keep_unique_columns(df):
+            cols = []
+            for col in df.columns:
+                if (df[col] == df[col].iat[0]).all():
+                    cols.append(col)
+                else:
+                    print(f'Removing {col}')
+            return df[cols].head(1)
+        if len(names) > 0:
+            res = df.groupby(list(names), group_keys=False).apply(keep_unique_columns)
+        else:
+            return df
         return res
     
     def get_locations(self, name, selection_dict={}, **selection_kwargs) -> pd.DataFrame:
@@ -208,11 +266,11 @@ def open_and_save(saver, mode):
             saver(f, o)
     return new_saver
 
-def cache(saver=default_saver, open=None):
+def cache(saver=default_saver, open=None, force_recompute=False):
     def decorator(f):
         @functools.wraps(f)
         def new_f(out_location, *args, **kwargs):
-            if out_location.exists():
+            if out_location.exists() and not force_recompute:
                 return
             res = f(out_location, *args, **kwargs)
             if open is None:

@@ -45,7 +45,11 @@ class CoordComputer:
                     tmp_dfs = []
                     for _, row in df.iterrows():
                         d = row.to_dict()
-                        tmp = new_f(**d)
+                        try:
+                            tmp = new_f(**d)
+                        except Exception as e:
+                            e.add_note(f'Parameters are {d}')
+                            raise e
                         for k,v in d.items():
                             tmp[k] = v
                         tmp_dfs.append(tmp)
@@ -83,7 +87,7 @@ class Pipeline:
         self.data = {}
 
     def declare(self, o):
-        print(f"declaring {o}")
+        # print(f"declaring {o}")
         if isinstance(o, CoordComputer):
             self.coord_computers.append(o)
         elif isinstance(o, Data):
@@ -97,30 +101,8 @@ class Pipeline:
         self.declare(f._pipelineobject)
         return f
 
-    # def declare_coord(self, o: CoordComputer):
-    #     self.coord_computers.append(o)
-            
-    # def declare_data(self, d: Data):
-    #     if d.name in self.data:
-    #         raise Exception(f"Data {d.name} already exists")
-    #     self.data[d.name] = d
-
-
-    # def register_coord(self, coords=None):
-    #     def decorator(f):
-    #         self.declare_coord(CoordComputer.decl_decorator(f, coords))
-    #         return f
-    #     return decorator
-    
-    
-    # def register_data(self):
-    #     def decorator(f):
-    #         self.declare_data(Data.decl_decorator(f))
-    #         return f
-    #     return decorator
-    
     def initialize(self):
-        print(list(self.data.keys()))
+        # print(list(self.data.keys()))
         if hasattr(self, "instance"):
             raise Exception("Cannot be initialized twice")
         inst = PipelineInstance(self)
@@ -130,13 +112,16 @@ class Pipeline:
     def __getattr__(self, name: str) -> Any:
         if name != "instance":
             if hasattr(self, "instance"):
-                return self.instance.__getattr__(name)
+                try:
+                    return self.instance.__getattribute__(name)
+                except Exception as e:
+                    e.add_note(f'getaatr, name={name}')
+                    raise
             else:
                 raise AttributeError()
         else:
             raise AttributeError()
         
-
 
 class PipelineInstance:
     p: Pipeline
@@ -174,9 +159,16 @@ class PipelineInstance:
                     df = df.loc[df[s] ==v]
         return df
     
-
-    def get_coords(self, names: set[str], selection_dict = {}, **selection_kwargs):
+    def get_coords(self, names, selection_dict = {}, **selection_kwargs):
+        from frozendict import frozendict
         selection_dict = selection_dict | selection_kwargs
+        if isinstance(names, str):
+            names = [names]
+        return self.cached_get_coords(frozenset(names), frozendict(selection_dict))
+        
+    @functools.cache
+    def cached_get_coords(self, names: set[str], selection_dict):
+        
         all_names = self._get_dependencies(names)
         
         df = pd.DataFrame([[]])
@@ -193,29 +185,11 @@ class PipelineInstance:
                         raise e
                     df = pd.merge(df, tmp_df, on=list(cc.dependencies), how="inner") if len(dep_list) > 0 else pd.merge(df, tmp_df, how="cross") 
                     
-                    # if len(cc.dependencies) > 0:
-                    #     for ind, _ in df.groupby(dep_list if len(dep_list) > 1 else dep_list[0]):
-                    #         if not isinstance(ind, tuple):
-                    #             ind = (ind, )
-                    #         dep_dict = {k:v for k, v in zip(dep_list, ind)}
-                    #         ret_df = cc.compute(dep_dict)
-                    #         ret_df = self._filter(ret_df, selection_dict)
-                    #         for k, v in dep_dict.items():
-                    #             ret_df[k] = v
-                    #         tmp_dfs.append(ret_df)
-                    #     tmp_df = pd.concat(tmp_dfs)
-                    #     df = pd.merge(df, tmp_df, on=list(cc.dependencies), how="inner") 
-                    # else:
-                    #     ndf = cc.compute({})
-                    #     ndf = self._filter(ndf, selection_dict)
-                    #     df = pd.merge(df, ndf, how="cross") 
         def keep_unique_columns(df):
             cols = []
             for col in df.columns:
                 if (df[col] == df[col].iat[0]).all():
                     cols.append(col)
-                else:
-                    print(f'Removing {col}')
             return df[cols].head(1)
         if len(names) > 0:
             res = df.groupby(list(names), group_keys=False).apply(keep_unique_columns)
@@ -235,16 +209,32 @@ class PipelineInstance:
         else:
             return r["location"].iat[0]
         
-    def compute(self, name,  selection_dict={}, **selection_kwargs) -> None:
+    def compute(self, name,  selection_dict={}, **selection_kwargs) -> pd.DataFrame:
         locs = self.get_locations(name, selection_dict, **selection_kwargs)
         if locs["location"].duplicated().any():
             raise Exception(f"Duplication problem\n{locs}")
-        for _, row in locs.iterrows():
+        import tqdm.auto as tqdm
+        for _, row in tqdm.tqdm(locs.iterrows(), desc=f"compute {name}", disable=len(locs.index) < 10, total = len(locs.index)):
             try:
                 self.p.data[name].compute(row["location"], row.drop("location").to_dict())
             except Exception as e:
                 e.add_note(f'During computation of {name}({row["location"]}, {row.drop("location").to_dict()})')
                 raise 
+        return locs
+    
+    def compute_unique(self, name,  selection_dict={}, **selection_kwargs) -> Path:
+        r = self.compute(name,  selection_dict, **selection_kwargs)
+        if len(r.index) != 1:
+            raise Exception(f"Problem {len(r.index)}\n{r}")
+        else:
+            return r["location"].iat[0]
+    def __str__(self):
+        return (
+            f'Coordinates:\n\t'+"\n\t".join([str(k) for k in self.coords.keys()]) +
+            f'\nFiles:\n\t'+"\n\t".join([f'{k} {tuple(self.p.data[k].coords)}' for k in self.p.data.keys()]) 
+        )
+    
+        # str() + "\n" + str(self.p.data.keys())
 
 def default_saver(path: Path, o):
     import pickle
@@ -282,136 +272,12 @@ def cache(saver=default_saver, open=None, force_recompute=False):
         return new_f
     return decorator
 
-# class CoordsProtocol(Protocol):
-#     def meth(self, coords: Dict[str, Any]) -> pd.DataFrame: ...
-
-# @dataclass
-# class Coords:
-#     dependencies: List[str]
-#     func: CoordsProtocol
-
-# class DataLocProtocol(Protocol):
-#     def meth(self, coords: Dict[str, Any]) -> Path | List[Any]: ...
-
-# class DataComputeProtocol(Protocol):
-#     def meth(self, out_location, coords: Dict[str, Any]) -> None: ...
-
-# @dataclass
-# class Data:
-#     dependencies: List[str]
-#     location: DataLocProtocol
-#     computation: DataComputeProtocol | None
-
-# class Pipeline:
-#     coords: Dict[str, Coords]
-#     data: Dict[str, Data]
-
-#     def __init__(self):
-#         self.coords={}
-#         self.data={}
-
-
-#     def declare_coord(self, name: str, depends_on: List[str], func):
-#         self.coords[name] = Coords(dependencies=depends_on, func=func)
-
-
-#     def declare_data(self, name, depends_on: List[str], loc_func: DataLocProtocol, compute_func: DataComputeProtocol=None):
-#         self.data[name] = Data(dependencies=depends_on, location=loc_func, computation=compute_func)
-
-#     def register_coord(self, name: str = None, depends_on: List[str] = None):
-#         def decorator(f):
-#             nonlocal name, depends_on
-#             if depends_on is None:
-#                 depends_on = list(inspect.signature(f).parameters.keys())
-#                 func = lambda coords: f(**{k: v for k,v in coords.items() if k in depends_on})
-#             else:
-#                 func = f
-#             if name is None:
-#                 name = f.__name__
-#             self.declare_coord(name, depends_on=depends_on, func=func)
-#             return f
-#         return decorator
-    
-#     def register_data(self, name=None, depends_on=None):
-#         def decorator(cls):
-#             nonlocal name, depends_on
-#             if name is None:
-#                 if hasattr(cls, "name"):
-#                     name = cls.name
-#                 else:
-#                     name = cls.__name__
-#             if depends_on is None:
-#                 depends_on = list(inspect.signature(cls.location).parameters.keys())
-#                 for n in depends_on:
-#                     if n in self.coords:
-#                         for d in  self.coords[n].dependencies:
-#                             if d in self.coords and not d in depends_on:
-#                                 raise Exception(f"Problem {[d for d in self.coords[n].dependencies if d in self.coords]} {depends_on}")
-#                 loc_func = lambda coords: cls.location(**{k: v for k,v in coords.items() if k in depends_on})
-#                 compute_func =  lambda out_location, coords: cls.compute(out_location, **{k: v for k,v in coords.items() if k in depends_on}) if hasattr(cls, "compute") else None
-#             else:
-#                 loc_func = cls.location
-#                 compute_func = cls.compute if hasattr(cls, "compute") else None
-#             self.declare_data(name, depends_on, loc_func=loc_func, compute_func=compute_func)
-#             return cls
-#         return decorator
-
-
-#     def get_coords(self, names, selection_dict = {}, **selection_kwargs):
-#         selection_dict = selection_dict | selection_kwargs
-#         if isinstance(names, str):
-#             names = (names, )
-#         df = pd.DataFrame([[]])
-#         names= set(d for n in names for d in self.coords[n].dependencies if d in self.coords).union(set(names))
-#         while True:
-#             names = names.difference(set(df.columns))
-#             name = [n for n in names if set(self.coords[n].dependencies).issubset(set(df.columns))]
-#             if len(name)==0:
-#                 break
-#             else:
-#                 name=name[0]
-#             coord = self.coords[name]
-
-#             r = []
-#             for _, row in df.iterrows():
-#                 tmp = coord.func(coords=row.to_dict())
-#                 for c in row.index:
-#                     tmp[c] = row.at[c]
-#                 if not name in tmp.columns:
-#                     raise Exception(f'{name} should appear in columns...')
-#                 r.append(tmp)
-#             ddf= pd.concat(r)
-#             for s, v in selection_dict.items():
-#                 if s in ddf.columns:
-#                     if isinstance(v, tuple):
-#                         ddf = ddf.loc[ddf[s].isin(v)]
-#                     elif isinstance(v, slice):
-#                         if v.step:
-#                             Exception("step not handled")
-#                         start_cond = ddf[s] >= v.start if v.start else True
-#                         end_cond = ddf[s] < v.stop if v.stop else True
-#                         ddf = ddf.loc[start_cond & end_cond]
-#                     else:
-#                         ddf = ddf.loc[ddf[s] ==v]
-#             on = set(df.columns).intersection(set(ddf.columns))
-#             df = df.merge(ddf, how="outer" if on else "cross", on=list(on) if on else None)
-#         return df
-    
-#     def get_locations(self, name, selection_dict={}, **selection_kwargs) -> pd.Series:
-#         coords = self.get_coords(self.data[name].dependencies, selection_dict, **selection_kwargs)
-#         cols = [str(c) for c in coords.columns]
-#         coords["location"] = coords.apply(lambda row: self.data[name].location(row.to_dict()), axis=1)
-#         return coords.set_index(cols)["location"]
-            
-
-#     def get_single_location(self, name, selection_dict={}, **selection_kwargs) -> Path:
-#         r = self.get_locations(name, selection_dict, **selection_kwargs)
-#         if len(r.index) !=1:
-#             raise Exception("Problem")
-#         else:
-#             return r.iat[0]
-    
-#     def compute(self, name,  selection_dict={}, **selection_kwargs) -> None:
-#         locs = self.get_locations(name, selection_dict, **selection_kwargs).reset_index()
-#         for _, row in locs.iterrows():
-#             self.data[name].computation(row.iat[-1], row.iloc[:-1].to_dict())
+def singleglob(p: Path, *patterns, error_string='Found {n} candidates for pattern {patterns} in folder {p}', only_ok=False):
+    all = [path for pat in patterns for path in p.glob(pat)]
+    if only_ok:
+        return len(all)==1
+    if len(all) >1:
+        raise FileNotFoundError(error_string.format(p=p, n=len(all), patterns=patterns))
+    if len(all) ==0:
+        raise FileNotFoundError(error_string.format(p=p, n=len(all), patterns=patterns))
+    return all[0]

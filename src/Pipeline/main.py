@@ -1,6 +1,6 @@
 import logging, beautifullogger
 import sys
-from Pipeline.pipeline import Pipeline, cache, Data, CoordComputer
+from Pipeline.pipeline import Pipeline, cache, Data, CoordComputer, singleglob
 import pandas as pd, numpy as np
 from pathlib import Path
 logger = logging.getLogger(__name__)
@@ -34,21 +34,19 @@ class AllSongFolders:
 
     @staticmethod
     def location():
-        return  base_folder/"all_song_folders.tsv"
+        return  base_folder/"all_song_folders.txt"
     
     @staticmethod
-    @cache()
+    @cache(lambda *args: np.savetxt(*args, fmt="%s"))
     def compute(out_location: Path, selection):
-        return list(carmen_folder.glob("**/song"))
+        return np.array([str(f.relative_to(carmen_folder)) for f in carmen_folder.glob("**/song")])
     
 @p.register
 @CoordComputer.from_function(vectorized=False, adapt_return=True)
 def session():
-    import pickle
     p.compute("all_song_folders")
-    with p.get_single_location("all_song_folders").open("rb") as f:
-        l = pickle.load(f)
-    all = [str(f.parent.relative_to(carmen_folder)) for f in l]
+    l=np.loadtxt(p.get_single_location("all_song_folders"), dtype=str)
+    all = [str(Path(f).parent) for f in l if not "UnusedRecordings" in f]
     return all
 
 @p.register
@@ -60,7 +58,6 @@ def subject(session: str):
 @p.register
 @CoordComputer.from_function(coords=["date"], dependencies=["session"], vectorized=True, adapt_return=False)
 def date(df: pd.DataFrame):
-
     def simple_extract(session):
         return session.str.extract("(\d{4}-\d{2}-\d{2})", expand=False)
     def simple_extract2(session):
@@ -79,6 +76,58 @@ def date(df: pd.DataFrame):
         df["date"] = np.where(pd.isna(df["date"]), f(df["session"]), df["date"])
 
     return df
+
+
+@p.register
+@Data.from_class
+class RawNeuroData:
+    name = "raw_session_data"
+
+    @staticmethod
+    def location(session):
+        try:
+            return singleglob(carmen_folder / session, "*.smr", "*.smrx", "*.SMR", "*.SMRX")
+        except FileNotFoundError:
+            return singleglob(carmen_folder / session, "**/bua/raw_traces")
+
+    
+
+@p.register
+@CoordComputer.from_function(vectorized=False, adapt_return=True)
+def recording_source(session: str):
+    l: Path = p.get_single_location("raw_session_data", session=session)
+    if "smr" in l.suffix.lower():
+        return ["spike2"]
+    elif not l.suffix:
+        return ["neuropixel"]
+    else:
+        return ["Unknown"]
+    
+
+    
+# @p.register
+# @Data.from_class
+# class RawNeuroMetadata:
+#     name = "raw_session_metadata"
+
+#     @staticmethod
+#     def location(session):
+#         return carmen_folder / session / 
+
+
+
+# @p.register
+# @CoordComputer.from_function(vectorized=False, adapt_return=True)
+# def raw_electrophy_signal(session: str):
+#     ret = str(Path(session).parents[-2])
+#     return [ret]
+
+# @p.register
+# @CoordComputer.from_function(vectorized=False, adapt_return=True)
+# def spike_signals(session: str, raw_electrophy_signal):
+#     ret = str(Path(session).parents[-2])
+#     return [ret]
+
 
 # @p.register_coord(["session"])
 # def session(subject):
@@ -133,7 +182,6 @@ def run():
     setup_nice_logging()
     logger.info("Running start")
     p = p.initialize()
-    print(p.get_coords(["session", "subject", "date"]
-                    ))
+    print(p.get_coords(["session", "subject", "date", "neuro_recording_source"]))
     # p.compute("songfilt", subject="s2")
     logger.info("Running end")

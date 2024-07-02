@@ -2,14 +2,14 @@ from setuptools import setup, find_packages
 
 
 setup(
-    name='Database',
+    name='database',
     packages=find_packages(where='src'),
-    package_data={
-        "Database.package_data": ["*"],
-    },
+    # package_data={
+    #     "Database.package_data": ["*"],
+    # },
     entry_points={
         'console_scripts': [
-            'Database = Database:run',
+            'Database = database:run',
         ]
     },
     version='0.1',

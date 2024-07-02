@@ -2,8 +2,10 @@ from typing import Dict, Tuple, NamedTuple, List, Callable, Any, Protocol, Conta
 from dataclasses import dataclass
 import pandas as pd
 from pathlib import Path
-import inspect, functools
+import inspect, functools, logging
 import collections, collections.abc
+
+logger=logging.getLogger(__name__)
 
 class ComputeProtocol(Protocol):
     def meth(self, out_location, coords: Dict[str, Any]) -> None: ...
@@ -164,11 +166,9 @@ class PipelineInstance:
         selection_dict = selection_dict | selection_kwargs
         if isinstance(names, str):
             names = [names]
-        return self.cached_get_coords(frozenset(names), frozendict(selection_dict))
+        return functools.cache(self._get_coords_impl)(frozenset(names), frozendict(selection_dict)).copy(deep=True)
         
-    @functools.cache
-    def cached_get_coords(self, names: set[str], selection_dict):
-        
+    def _get_coords_impl(self, names: set[str], selection_dict):
         all_names = self._get_dependencies(names)
         
         df = pd.DataFrame([[]])
@@ -194,7 +194,7 @@ class PipelineInstance:
         if len(names) > 0:
             res = df.groupby(list(names), group_keys=False).apply(keep_unique_columns)
         else:
-            return df
+            res = df
         return res
     
     def get_locations(self, name, selection_dict={}, **selection_kwargs) -> pd.DataFrame:
@@ -211,15 +211,21 @@ class PipelineInstance:
         
     def compute(self, name,  selection_dict={}, **selection_kwargs) -> pd.DataFrame:
         locs = self.get_locations(name, selection_dict, **selection_kwargs)
+        tmp = locs.to_string()
         if locs["location"].duplicated().any():
             raise Exception(f"Duplication problem\n{locs}")
         import tqdm.auto as tqdm
         for _, row in tqdm.tqdm(locs.iterrows(), desc=f"compute {name}", disable=len(locs.index) < 10, total = len(locs.index)):
             try:
+                test = str(row["location"]).replace(" ", " ")
                 self.p.data[name].compute(row["location"], row.drop("location").to_dict())
+                if test !=  str(row["location"]):
+                    logger.warning("Problem")
             except Exception as e:
                 e.add_note(f'During computation of {name}({row["location"]}, {row.drop("location").to_dict()})')
                 raise 
+        if tmp !=locs.to_string():
+            raise Exception(f'loc changed\n{tmp}\n{locs.to_string()}')
         return locs
     
     def compute_unique(self, name,  selection_dict={}, **selection_kwargs) -> Path:
@@ -230,8 +236,9 @@ class PipelineInstance:
             return r["location"].iat[0]
     def __str__(self):
         return (
-            f'Coordinates:\n\t'+"\n\t".join([str(k) for k in self.coords.keys()]) +
-            f'\nFiles:\n\t'+"\n\t".join([f'{k} {tuple(self.p.data[k].coords)}' for k in self.p.data.keys()]) 
+            f'Pipeline\n'+
+            f'\tCoordinates: '+", ".join([str(k) for k in self.coords.keys()]) +
+            f'\n\tFiles:\n\t\t'+"\n\t\t".join([f'{k} {tuple(self.p.data[k].coords)}' for k in self.p.data.keys()]) 
         )
     
         # str() + "\n" + str(self.p.data.keys())
@@ -281,3 +288,11 @@ def singleglob(p: Path, *patterns, error_string='Found {n} candidates for patter
     if len(all) ==0:
         raise FileNotFoundError(error_string.format(p=p, n=len(all), patterns=patterns))
     return all[0]
+
+def get_fs(a):
+    import numpy as np
+    period = np.mean(a[1:] - a[:-1])
+    new_arr = np.arange(a.size)*period+a[0]
+    if (np.abs(a-new_arr) > 0.01*period).any():
+        raise Exception("Array not regular")
+    return 1/period

@@ -2,14 +2,14 @@ from setuptools import setup, find_packages
 
 
 setup(
-    name='Pipeline',
+    name='Database',
     packages=find_packages(where='src'),
     package_data={
-        "Pipeline.package_data": ["*"],
+        "Database.package_data": ["*"],
     },
     entry_points={
         'console_scripts': [
-            'Pipeline = Pipeline:run',
+            'Database = Database:run',
         ]
     },
     version='0.1',
@@ -18,8 +18,8 @@ setup(
     description_file = "README.md",
     author="Julien Braine",
     author_email='julienbraine@yahoo.fr',
-    url='https://github.com/JulienBrn/Pipeline',
-    download_url = 'https://github.com/JulienBrn/Pipeline.git',
+    url='https://github.com/JulienBrn/Database',
+    download_url = 'https://github.com/JulienBrn/Database.git',
     package_dir={'': 'src'},
     keywords=['python'],
     install_requires=[],

@@ -1,6 +1,6 @@
 import logging, beautifullogger
 import sys
-from Pipeline.pipeline import Pipeline, cache, Data, CoordComputer, singleglob
+from Database.database import DatabaseInstance, Database, cache, Data, CoordComputer, singleglob
 import pandas as pd, numpy as np
 from pathlib import Path
 logger = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 sys.excepthook = handle_exception
 
 
-p = Pipeline()
+p = Database()
 carmen_folder= Path("/media/filer2/T4b/Carmen/LMANX_correlations_project/LMANX_behavior_data/BirdData/")
 base_folder = Path("./test")
 

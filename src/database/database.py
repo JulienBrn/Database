@@ -81,13 +81,22 @@ class Data:
             loc_func = getattr(cls, "location")
             loc_func_args = set(inspect.signature(loc_func).parameters.keys())
             name = getattr(cls, "name") if hasattr(cls, "name") else cls.__name__ 
-
+            def loc_func_debug(*args, **kwargs):
+                # print(f'Calling {getattr(cls, "location")}')
+                try:
+                    r = loc_func(*args, **kwargs)
+                except:
+                    import traceback
+                    traceback.print_exc()
+                    exit()
+                # print(r)
+                return r
             if actions is None:
                 actions = [meth  for meth in dir(cls) if isinstance(inspect.getattr_static(cls, meth), staticmethod) and meth!="location"]
             
             cls._databaseobject = Data(name=name, 
                                        dependencies=loc_func_args, 
-                                       get_location=lambda d: loc_func(**{k: v for k,v in d.items() if k in loc_func_args}), 
+                                       get_location=lambda d: loc_func_debug(**{k: v for k,v in d.items() if k in loc_func_args}), 
                                        actions = {a:getattr(cls, a) for a in actions}
             )
             return cls
@@ -144,6 +153,7 @@ class DatabaseInstance:
     def __init__(self, db: Database):
         self.db = db
         self.coords = {}
+        self.continue_on_error=False
         for cc in db.coord_computers:
             for c in cc.coords:
                 if c in self.coords:
@@ -180,36 +190,59 @@ class DatabaseInstance:
         selection_dict = selection_dict | selection_kwargs
         if isinstance(names, str):
             names = [names]
-        return functools.cache(self._get_coords_impl)(frozenset(names), frozendict(selection_dict)).copy(deep=True)
-        
+        return (
+                (self._get_coords_impl)(frozenset(names), frozendict(selection_dict)).copy(deep=True)
+        )
+            
+    @functools.cache
     def _get_coords_impl(self, names: set[str], selection_dict):
         all_names = self._get_dependencies(names)
         
         df = pd.DataFrame([[]])
+        # print("ENTER", names, selection_dict)
         while not all_names.issubset(set(df.columns)):
             for cc in self.db.coord_computers:
                 if cc.coords.intersection(all_names) != set() and cc.dependencies.issubset(set(df.columns)) and not cc.coords.issubset(set(df.columns)):
+                    # print(cc)
+                    # print(df)
                     # tmp_dfs = []
                     dep_list = list(cc.dependencies)
                     param_df = df[dep_list].drop_duplicates()
+                    # print("NEWWWWWW")
+                    # print(param_df)
                     try:
-                        tmp_df = self._filter(cc.compute(self, param_df), selection_dict)
+                        computed_df = cc.compute(self, param_df)
+                        # print(computed_df)
+                        tmp_df = self._filter(computed_df, selection_dict)
                     except Exception as e:
                         e.add_note(f'While computing {cc.coords}')
                         raise e
-                    df = pd.merge(df, tmp_df, on=list(cc.dependencies), how="inner") if len(dep_list) > 0 else pd.merge(df, tmp_df, how="cross") 
-                    
+                    # print(tmp_df)
+                    # print(selection_dict)
+                    df = pd.merge(df, tmp_df, on=list(cc.dependencies), how="inner") if len(dep_list) > 0 else pd.merge(df, tmp_df, how="cross")             
+                    # print(df)
+                    # print(f'columns={set(df.columns)}')
+        cols_to_remove=[]
         def keep_unique_columns(df):
             cols = []
             for col in df.columns:
-                if (df[col] == df[col].iat[0]).all():
+                if (df[col] == df[col].iat[0]).all() and ~pd.isna(df[col].iat[0]):
                     cols.append(col)
+                else:
+                    cols_to_remove.append(col)
             return df[cols].head(1)
         
         if len(names) > 0:
-            res = df.groupby(list(names), group_keys=False).apply(keep_unique_columns)
+            res = df.groupby(list(names), group_keys=False).apply(keep_unique_columns).reset_index(drop=True)
+            res = res[[col for col in res.columns if not col in cols_to_remove]]
         else:
+            raise Exception("Strange")
             res = df
+        # print("done")
+        # print(names)
+        # print(selection_dict)
+        # print(res)
+        # input()
         return res
     
     def get_locations(self, name, selection_dict={}, **selection_kwargs) -> pd.DataFrame:
@@ -235,12 +268,18 @@ class DatabaseInstance:
         if action != "location":
             import tqdm.auto as tqdm
             results = []
+            errors = []
             for _, row in tqdm.tqdm(locs.iterrows(), desc=f"{action} {target}", disable=len(locs.index) < 10, total = len(locs.index)):
                 try:
                     results.append(self.db.data[target].actions[action](self, row["location"], row.drop("location").to_dict()))
                 except Exception as e:
                     e.add_note(f'During {action} for {target}({row["location"]}, {row.drop("location").to_dict()})')
-                    raise
+                    if not self.continue_on_error:
+                        raise
+                    else:
+                        errors.append(e)
+            if len(errors) > 0:
+                raise ExceptionGroup(f'During {action} for {target}', errors)
             import numpy as np
             if len(locs.index) == 1:
                 locs[action] = pd.Series(dtype="object")

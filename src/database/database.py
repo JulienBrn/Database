@@ -253,7 +253,7 @@ class DatabaseInstance:
     @staticmethod
     def _extract_single(df: pd.DataFrame, col: str):
         if len(df.index) != 1:
-            raise Exception("Problem")
+            raise Exception(f"Problem. Expected a single line, got\n{df}")
         else:
             return df[col].iat[0]
 
@@ -328,8 +328,9 @@ def default_saver(path: Path, o):
 
 def safe_save(saver):
     import shutil
-    def new_saver(path, o):
-        tmp_path = Path(str(path) + ".tmp")
+    def new_saver(path: Path, o):
+        suffix = path.suffix
+        tmp_path = path.parent / (path.stem + ".tmp" + suffix)
         tmp_path.parent.mkdir(exist_ok=True, parents=True)
         saver(tmp_path, o)
         shutil.move(tmp_path, path)
@@ -374,3 +375,12 @@ def get_fs(a):
     if (np.abs(a-new_arr) > 0.01*period).any():
         raise Exception("Array not regular")
     return 1/period
+
+def precompute(name, action="compute"):
+    def decorate(f):
+        @staticmethod
+        def new_f(db, out_location, selection):
+            db.run_action(action, name, selection, single=True)
+            return f(db, out_location, selection)
+        return new_f
+    return decorate

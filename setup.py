@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 
 setup(
-    name='database',
+    name='databasev2',
     packages=find_packages(where='src'),
     # package_data={
     #     "Database.package_data": ["*"],

@@ -4,9 +4,102 @@ from dataclasses import dataclass
 import pandas as pd
 from pathlib import Path
 import inspect, functools, logging
-import collections, collections.abc, types
+import collections, collections.abc, types, functools
 
 logger=logging.getLogger(__name__)
+
+@dataclass
+class CoordComputer:
+    name: str
+    coords: set[str]
+    dependencies: set[str]
+    compute: Callable[[DatabaseInstance, pd.DataFrame], pd.DataFrame]
+
+    @staticmethod
+    def from_class(): ...
+
+class CreateProtocol(Protocol):
+    def __call__(self, d: DatabaseInstance, coords: Dict[str, Any]) -> Any: ...
+
+class FilterProtocol(Protocol):
+    name: str
+    def __call__(self, d: DatabaseInstance, df: pd.Series) -> pd.Series: ...
+
+@dataclass
+class DataObject:
+    name: str
+    dependencies: set[str]
+    actions: set[str]
+    filters: List[FilterProtocol]
+    create: CreateProtocol
+
+    @staticmethod
+    def from_class(): ...
+
+@dataclass
+class ObjectsHolder:
+    _series: pd.Series
+    object_name: str
+    actions: set[str]
+    filters: List[FilterProtocol]
+
+    def run(self, action_name: str, progress=True, parralelize=False) -> Callable : 
+        return self._run(action_name, progress, parralelize)
+    def get_object_series(self, apply_filters=True) -> pd.Series: 
+        return self._get_object_series(self, apply_filters)
+    def __getattr__(self, attr):
+        if attr in self.actions:
+            return functools.partial(self.run, action_name=attr)
+        else:
+            raise AttributeError()
+        
+
+
+
+
+
+class Database:
+    name: str
+    coord_computers = List[CoordComputer]
+    data: Dict[str, Data]
+
+    
+
+class DatabaseInstance:
+    db: Database
+    coords: Dict[str, CoordComputer]
+
+    def get(self, name, selection_dict, **selection) -> ObjectsHolder: ...
+    def get_single(self, name, selection_dict, **selection) -> Any: ...
+
+
+
+
+
+
+
+
+
+class ObjectsHolderImpl(ObjectsHolder):
+    def _run(self, action_name: str, progress, parralelize):
+        pass
+
+    def _get_object_series(self, apply_filters):
+        s = self._series
+        if apply_filters:
+            for f in self.filters:
+                s =  f(s)
+        return s
+
+
+
+
+
+
+
+
+
+
 
 @dataclass
 class CoordComputer:

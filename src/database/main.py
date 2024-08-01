@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging, beautifullogger
 import sys
 from database.database import DatabaseInstance, Database, cache, Data, CoordComputer, singleglob
@@ -22,8 +23,33 @@ def handle_exception(exc_type, exc_value, exc_traceback):
 
 sys.excepthook = handle_exception
 
-
+from dataclasses import dataclass
 p = Database("test")
+
+class DataBaseSelection: pass
+
+
+    
+
+
+class Data:
+    name = "data"
+
+    @dataclass
+    class Params(DataBaseSelection):  
+        folder: Path; session: str; subject: str
+        out_fs: float; shoulder_duration: float
+
+    selection: Params
+    db: DatabaseInstance
+
+    def compute(self, recompute="recursive"):
+        loc = self.location()
+        pass
+
+    def location(self):
+        return Path("toto")
+
 # carmen_folder= Path("/media/filer2/T4b/Carmen/LMANX_correlations_project/LMANX_behavior_data/BirdData/")
 # base_folder = Path("./test")
 

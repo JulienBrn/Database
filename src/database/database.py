@@ -180,19 +180,25 @@ class DatabaseInstance:
                     start_cond = df[s] >= v.start if v.start else True
                     end_cond = df[s] < v.stop if v.stop else True
                     df = df.loc[start_cond & end_cond]
+                elif isinstance(v, Callable):
+                    df = df.loc[df[s].apply(v)]
                 else:
                     df = df.loc[df[s] ==v]
         return df
     
 
-    def get_coords(self, names, selection_dict = {}, **selection_kwargs):
+    def get_coords(self, names, selection_dict = {},  single=False, **selection_kwargs):
         from frozendict import frozendict
         selection_dict = selection_dict | selection_kwargs
         if isinstance(names, str):
             names = [names]
-        return (
+        res = (
                 (self._get_coords_impl)(frozenset(names), frozendict(selection_dict)).copy(deep=True)
         )
+        if not single:
+            return res
+        else :
+            return self._extract_single(res, names[0] if len(names) ==1 else names)
             
     @functools.cache
     def _get_coords_impl(self, names: set[str], selection_dict):
@@ -255,7 +261,7 @@ class DatabaseInstance:
         if len(df.index) != 1:
             raise Exception(f"Problem. Expected a single line, got\n{df}")
         else:
-            return df[col].iat[0]
+            return df.iloc[0][col]
 
     def get_single_location(self, name, selection_dict={}, **selection_kwargs) -> Path:
         return DatabaseInstance._extract_unique(self.get_locations(name, selection_dict, **selection_kwargs), "location")
@@ -264,12 +270,17 @@ class DatabaseInstance:
     def run_action(self, action, target, selection_dict={}, single=False, **selection_kwargs) -> pd.DataFrame | Any:
         locs = self.get_locations(target, selection_dict, **selection_kwargs)
         if locs["location"].duplicated().any():
-            raise Exception(f"Duplication problem\n{locs}")
+            raise Exception(f'Duplication problem\n{locs[locs["location"].isin(locs["location"][locs["location"].duplicated()])]}')
         if action != "location":
             import tqdm.auto as tqdm
             results = []
             errors = []
-            for _, row in tqdm.tqdm(locs.iterrows(), desc=f"{action} {target}", disable=len(locs.index) < 10, total = len(locs.index)):
+            progress = tqdm.tqdm(desc=f"{action} {target}", disable=len(locs.index) < 3, total = len(locs.index))
+            for _, row in locs.iterrows():
+                if self.continue_on_error:
+                    progress.set_postfix(n_errors=len(errors), curr=row["location"])
+                else:
+                    progress.set_postfix(curr=row["location"])
                 try:
                     results.append(self.db.data[target].actions[action](self, row["location"], row.drop("location").to_dict()))
                 except Exception as e:
@@ -278,6 +289,7 @@ class DatabaseInstance:
                         raise
                     else:
                         errors.append(e)
+                progress.update(1)
             if len(errors) > 0:
                 raise ExceptionGroup(f'During {action} for {target}', errors)
             import numpy as np
@@ -323,8 +335,13 @@ class DatabaseInstance:
 
 def default_saver(path: Path, o):
     import pickle
-    with path.open("wb") as f:
-        pickle.dump(o, f)
+    if path.suffix == ".tsv" and isinstance(o, (pd.DataFrame, pd.Series)):
+        if not type(o.index) == pd.RangeIndex:
+            raise Exception("Automatic tsv writing does not store index information. Please reset your index... (either to drop it or to name it as a column) or use a dedicated saver")
+        o.to_csv(path, sep="\t", index=False)
+    else:
+        with path.open("wb") as f:
+            pickle.dump(o, f)
 
 def safe_save(saver):
     import shutil
@@ -349,6 +366,8 @@ def cache(saver=default_saver, open=None, force_recompute=False):
             if out_location.exists() and not force_recompute:
                 return out_location
             res = f(db, out_location, *args, **kwargs)
+            if res is None:
+                return out_location
             if open is None:
                 msaver= saver
             else:
@@ -384,3 +403,6 @@ def precompute(name, action="compute"):
             return f(db, out_location, selection)
         return new_f
     return decorate
+
+def tsvload(db, out_location, selection):
+    return pd.read_csv(out_location, sep="\t", index_col=None)
